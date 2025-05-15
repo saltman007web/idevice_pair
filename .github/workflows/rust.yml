@@ -111,8 +111,8 @@ jobs:
           name: ${{ env.APP_NAME }}-${{ env.VERSION }}-linux-${{ matrix.arch }}.AppImage
           path: ${{ env.APP_NAME }}-${{ env.VERSION }}-linux-${{ matrix.arch }}.AppImage
 
-  # 2) Build macOS slices
-  macos-universal:
+
+          lmacos-universal:
     name: Build macOS slices
     runs-on: macos-latest
     strategy:
@@ -126,7 +126,7 @@ jobs:
     steps:
       - uses: actions/checkout@v3
 
-      - name: Set up Rust for ${{ matrix.arch }}
+      - name: Set up Rust (${{ matrix.arch }})
         uses: actions-rs/toolchain@v1
         with:
           toolchain: stable
@@ -136,14 +136,14 @@ jobs:
       - name: Build ${{ matrix.arch }} slice
         run: |
           cargo build --release \
-            --bin ${{ env.BINARY_NAME }} \
-            --target ${{ matrix.target }}
+            --bin "${BINARY_NAME}" \
+            --target "${{ matrix.target }}"
 
-      - name: Upload slice ${{ matrix.arch }}
+      - name: Upload ${{ matrix.arch }} slice
         uses: actions/upload-artifact@v4
         with:
           name: slice-${{ matrix.arch }}
-          path: target/${{ matrix.target }}/release/${{ env.BINARY_NAME }}
+          path: target/${{ matrix.target }}/release/${BINARY_NAME}
 
   macos-bundle:
     name: Create, Sign, Notarize & Upload Universal DMG
@@ -171,35 +171,77 @@ jobs:
           p12-file-base64: ${{ secrets.DEV_ID_P12_BASE64 }}
           p12-password:    ${{ secrets.DEV_ID_P12_PASSWORD }}
 
-      - name: Build Universal .app Bundle
+      - name: Create .app bundle skeleton
         run: |
-          APP="${{ env.APP_NAME }}.app"
-          mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-          lipo slice-x86_64/${{ env.BINARY_NAME }} slice-arm64/${{ env.BINARY_NAME }} \
-            -create -output "$APP/Contents/MacOS/${{ env.APP_NAME }}"
-          # generate Info.plist and icon as before…
+          APP="${APP_NAME}.app"
+          mkdir -p "$APP/Contents/{MacOS,Resources}"
+          # merge into a universal executable
+          lipo \
+            slice-x86_64/${BINARY_NAME} \
+            slice-arm64/${BINARY_NAME} \
+            -create -output "$APP/Contents/MacOS/${APP_NAME}"
+          # make sure it's executable
+          chmod +x "$APP/Contents/MacOS/${APP_NAME}"
 
-      - name: Codesign .app
+          # write a minimal Info.plist
+          cat > "$APP/Contents/Info.plist" <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+            "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleName</key>
+            <string>${APP_NAME}</string>
+            <key>CFBundleDisplayName</key>
+            <string>${APP_NAME}</string>
+            <key>CFBundleIdentifier</key>
+            <string>com.yourcompany.${APP_NAME}</string>
+            <key>CFBundleExecutable</key>
+            <string>${APP_NAME}</string>
+            <key>CFBundleVersion</key>
+            <string>${VERSION}</string>
+            <key>CFBundlePackageType</key>
+            <string>APPL</string>
+            <key>LSMinimumSystemVersion</key>
+            <string>10.12</string>
+          </dict>
+          </plist>
+          EOF
+
+          # (optional) copy your icon if you have one:
+          # cp path/to/Icon.icns "$APP/Contents/Resources/"
+
+      - name: Remove quarantine & codesign .app
         run: |
-          APP="${{ env.APP_NAME }}.app"
+          APP="${APP_NAME}.app"
+          # clear any quarantine flags
           xattr -rc "$APP"
-          codesign --force --timestamp --options runtime \
-            --sign "${{ secrets.DEV_IDENTITY_NAME }}" "$APP"
+          # codesign
+          codesign \
+            --force \
+            --timestamp \
+            --options runtime \
+            --sign "${{ secrets.DEV_IDENTITY_NAME }}" \
+            "$APP"
+          # verify signature
+          codesign --verify --deep --strict --verbose=2 "$APP"
 
       - name: Create DMG
         run: |
+          DMG="${APP_NAME}-${VERSION}-macos-universal.dmg"
           mkdir dmg-staging
-          cp -R "${{ env.APP_NAME }}.app" dmg-staging/
+          cp -R "${APP_NAME}.app" dmg-staging/
           ln -s /Applications dmg-staging/Applications
           hdiutil create \
-            -volname "${{ env.APP_NAME }}" \
+            -volname "${APP_NAME}" \
             -srcfolder dmg-staging \
             -ov -format UDZO \
-            "${{ env.APP_NAME }}-${{ env.VERSION }}-macos-universal.dmg"
+            "$DMG"
 
       - name: Notarize DMG
         run: |
-          xcrun notarytool submit "${{ env.APP_NAME }}-${{ env.VERSION }}-macos-universal.dmg" \
+          DMG="${APP_NAME}-${VERSION}-macos-universal.dmg"
+          xcrun notarytool submit "$DMG" \
             --apple-id "${{ secrets.NOTARIZE_APPLE_ID }}" \
             --password "${{ secrets.NOTARIZE_APP_SPECIFIC_PASS }}" \
             --team-id "${{ secrets.NOTARIZE_TEAM_ID }}" \
@@ -207,14 +249,13 @@ jobs:
 
       - name: Staple ticket into DMG
         run: |
-          xcrun stapler staple "${{ env.APP_NAME }}-${{ env.VERSION }}-macos-universal.dmg"
+          xcrun stapler staple "${APP_NAME}-${VERSION}-macos-universal.dmg"
 
       - name: Upload notarized DMG
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.APP_NAME }}-${{ env.VERSION }}-macos-universal.dmg
-          path: ${{ env.APP_NAME }}-${{ env.VERSION }}-macos-universal.dmg
-
+          name: "${APP_NAME}-${VERSION}-macos-universal.dmg"
+          path: "${APP_NAME}-${VERSION}-macos-universal.dmg"
 
   # 5) Build & Upload Windows .exe
   build-windows:
