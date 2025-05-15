@@ -230,7 +230,7 @@ jobs:
           name: ${{ env.APP_NAME }}-${{ env.VERSION }}-macos-universal.dmg
           path: ${{ env.APP_NAME }}-${{ env.VERSION }}-macos-universal.dmg
 
-  # 4) Extract & Upload Notarized .app
+  # 4) Extract & Upload Only the Notarized .app
   extract-app:
     name: Extract & Upload Notarized .app
     runs-on: macos-latest
@@ -249,9 +249,12 @@ jobs:
             -nobrowse \
             -mountpoint "/Volumes/${{ env.APP_NAME }}"
 
-      - name: Copy out notarized .app
+      - name: Extract notarized .app
         run: |
-          cp -R "/Volumes/${{ env.APP_NAME }}/${{ env.APP_NAME }}.app" ./
+          # Use 'ditto' to preserve code signatures & resource forks:
+          ditto "/Volumes/${{ env.APP_NAME }}/${{ env.APP_NAME }}.app" "./${{ env.APP_NAME }}.app"
+          # Clear any residual quarantine flag so macOS will trust it immediately:
+          xattr -dr com.apple.quarantine "./${{ env.APP_NAME }}.app"
 
       - name: Detach DMG
         run: hdiutil detach "/Volumes/${{ env.APP_NAME }}"
