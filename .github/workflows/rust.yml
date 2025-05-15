@@ -38,6 +38,7 @@ jobs:
 
     steps:
       - uses: actions/checkout@v3
+
       - name: Cache Cargo registry & build artifacts
         uses: actions/cache@v3
         with:
@@ -49,12 +50,14 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}-
             ${{ runner.os }}-cargo-
+
       - name: Set up Rust
         uses: actions-rs/toolchain@v1
         with:
           toolchain: stable
           components: rustfmt, clippy
           target: ${{ matrix.target }}
+
       - name: Install build dependencies
         run: |
           sudo apt-get update
@@ -66,17 +69,20 @@ jobs:
             libfuse2 \
             appstream \
             usbmuxd
+
       - name: Build native binary
         run: |
           cargo build --release --bin ${{ env.BINARY_NAME }} --target ${{ matrix.target }}
+
       - name: Download appimagetool
         run: |
           wget -c https://github.com/AppImage/AppImageKit/releases/download/continuous/${{ matrix.toolfile }} \
             -O appimagetool.AppImage
           chmod +x appimagetool.AppImage
+
       - name: Prepare AppDir
         run: |
-          mkdir -p AppDir/usr/bin AppDir/usr/share/icons/hicolor/256x256/apps AppDir/etc/udev/rules.d
+          mkdir -p AppDir/usr/bin AppDir/usr/lib AppDir/usr/share/icons/hicolor/256x256/apps AppDir/etc/udev/rules.d
           cp target/${{ matrix.target }}/release/${{ env.BINARY_NAME }} AppDir/usr/bin/
           cp $(which usbmuxd) AppDir/usr/bin/
           sudo cp /lib/udev/rules.d/39-usbmuxd.rules AppDir/etc/udev/rules.d/
@@ -93,10 +99,12 @@ jobs:
           EOF
           ln -s usr/bin/${{ env.BINARY_NAME }} AppDir/AppRun
           chmod +x AppDir/AppRun
+
       - name: Build AppImage
         run: |
           FILENAME="${{ env.APP_NAME }}-${{ env.VERSION }}-linux-${{ matrix.arch }}.AppImage"
           ./appimagetool.AppImage AppDir "$FILENAME"
+
       - name: Upload AppImage
         uses: actions/upload-artifact@v4
         with:
@@ -117,15 +125,18 @@ jobs:
 
     steps:
       - uses: actions/checkout@v3
+
       - name: Set up Rust for ${{ matrix.arch }}
         uses: actions-rs/toolchain@v1
         with:
           toolchain: stable
           components: rustfmt, clippy
           target: ${{ matrix.target }}
+
       - name: Build ${{ matrix.arch }} slice
         run: |
           cargo build --release --bin ${{ env.BINARY_NAME }} --target ${{ matrix.target }}
+
       - name: Upload slice ${{ matrix.arch }}
         uses: actions/upload-artifact@v4
         with:
@@ -140,23 +151,28 @@ jobs:
 
     steps:
       - uses: actions/checkout@v3
+
       - name: Download x86_64 slice
         uses: actions/download-artifact@v4
         with:
           name: slice-x86_64
           path: slice-x86_64
+
       - name: Download arm64 slice
         uses: actions/download-artifact@v4
         with:
           name: slice-arm64
           path: slice-arm64
+
       - name: Import Developer ID certificate
         uses: apple-actions/import-codesign-certs@v5
         with:
           p12-file-base64: ${{ secrets.DEV_ID_P12_BASE64 }}
           p12-password:    ${{ secrets.DEV_ID_P12_PASSWORD }}
+
       - name: Verify code signing identities
         run: security find-identity -v -p codesigning
+
       - name: Build Universal .app Bundle
         run: |
           APP="${{ env.APP_NAME }}.app"
@@ -174,12 +190,13 @@ jobs:
             <key>CFBundleShortVersionString</key><string>${{ env.VERSION }}</string>
             <key>CFBundlePackageType</key><string>APPL</string>
             <key>CFBundleExecutable</key><string>${{ env.APP_NAME }}</string>
-            <key>CFBundleIconFile</key><string>idevicepair.icns</key>
+            <key>CFBundleIconFile</key><string>idevicepair.icns</string>
           </dict></plist>
           EOF
           sips -s format icns "${{ env.ICON_PNG }}" --out "$APP/Contents/Resources/icon.icns"
           xattr -rc "$APP"
-          codesign --deep --force --sign "${{ secrets.DEV_IDENTITY_NAME }}" "$APP"
+          # <-- Hardened Runtime enabled here -->
+          codesign --deep --force --options runtime --sign "${{ secrets.DEV_IDENTITY_NAME }}" "$APP"
           find "$APP" -type d -exec chmod 755 {} +
           find "$APP" -type f -exec chmod 644 {} +
           chmod +x "$APP/Contents/MacOS/${{ env.APP_NAME }}"
@@ -197,14 +214,16 @@ jobs:
             -format UDZO \
             "${{ env.APP_NAME }}-${{ env.VERSION }}-macos-universal.dmg"
 
-      - name: Notarize & Staple DMG
+      - name: Notarize DMG
         uses: lando/notarize-action@v2
         with:
           product-path: "${{ env.APP_NAME }}-${{ env.VERSION }}-macos-universal.dmg"
           appstore-connect-username: ${{ secrets.NOTARIZE_APPLE_ID }}
           appstore-connect-password: ${{ secrets.NOTARIZE_APP_SPECIFIC_PASS }}
           appstore-connect-team-id: ${{ secrets.NOTARIZE_TEAM_ID }}
-          staple: true
+
+      - name: Staple notarization ticket into DMG
+        run: xcrun stapler staple "${{ env.APP_NAME }}-${{ env.VERSION }}-macos-universal.dmg"
 
       - name: Upload notarized DMG
         uses: actions/upload-artifact@v4
@@ -212,9 +231,9 @@ jobs:
           name: ${{ env.APP_NAME }}-${{ env.VERSION }}-macos-universal.dmg
           path: ${{ env.APP_NAME }}-${{ env.VERSION }}-macos-universal.dmg
 
-  # 4) Extract, Notarize & Upload Only the .app
+  # 4) Extract, Staple & Upload Only the Notarized .app
   extract-app:
-    name: Extract, Notarize & Upload Notarized .app
+    name: Extract, Staple & Upload Notarized .app
     runs-on: macos-latest
     needs: macos-bundle
 
@@ -236,14 +255,9 @@ jobs:
           ditto "/Volumes/${{ env.APP_NAME }}/${{ env.APP_NAME }}.app" "./${{ env.APP_NAME }}.app"
           xattr -dr com.apple.quarantine "./${{ env.APP_NAME }}.app"
 
-      - name: Notarize & Staple extracted .app
-        uses: lando/notarize-action@v2
-        with:
-          product-path: "./${{ env.APP_NAME }}.app"
-          appstore-connect-username: ${{ secrets.NOTARIZE_APPLE_ID }}
-          appstore-connect-password: ${{ secrets.NOTARIZE_APP_SPECIFIC_PASS }}
-          appstore-connect-team-id: ${{ secrets.NOTARIZE_TEAM_ID }}
-          staple: true
+      - name: Staple notarization ticket into .app
+        run: |
+          xcrun stapler staple "./${{ env.APP_NAME }}.app"
 
       - name: Detach DMG
         run: hdiutil detach "/Volumes/${{ env.APP_NAME }}"
@@ -260,6 +274,7 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v3
+
       - name: Cache Cargo registry & build artifacts
         uses: actions/cache@v3
         with:
@@ -271,12 +286,14 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}-
             ${{ runner.os }}-cargo-
+
       - name: Set up Rust
         uses: actions-rs/toolchain@v1
         with:
           toolchain: stable
           components: rustfmt, clippy
           target: x86_64-pc-windows-msvc
+
       - name: Build and Rename Executable
         shell: bash
         run: |
@@ -284,6 +301,7 @@ jobs:
           mkdir -p release
           cp target/x86_64-pc-windows-msvc/release/${{ env.BINARY_NAME }}.exe \
              release/${{ env.APP_NAME }}-${{ env.VERSION }}-windows-x86_64.exe
+
       - name: Upload Windows .exe
         uses: actions/upload-artifact@v4
         with:
