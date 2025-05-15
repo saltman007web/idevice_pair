@@ -1,4 +1,4 @@
-name: Rust Cross‑Platform Builds
+name: Rust Cross-Platform Builds
 
 on:
   push:
@@ -83,12 +83,9 @@ jobs:
       - name: Prepare AppDir
         run: |
           mkdir -p AppDir/usr/bin AppDir/usr/lib AppDir/usr/share/icons/hicolor/256x256/apps AppDir/etc/udev/rules.d
-          # Copy your app
           cp target/${{ matrix.target }}/release/${{ env.BINARY_NAME }} AppDir/usr/bin/
-          # Copy usbmuxd daemon into the AppImage
           cp $(which usbmuxd) AppDir/usr/bin/
           sudo cp /lib/udev/rules.d/39-usbmuxd.rules AppDir/etc/udev/rules.d/
-          # Icons & desktop file
           ICON_NAME=${ICON_PNG##*/}; BASENAME=${ICON_NAME%.*}
           cp ${{ env.ICON_PNG }} AppDir/${BASENAME}.png
           cp ${{ env.ICON_PNG }} AppDir/usr/share/icons/hicolor/256x256/apps/${BASENAME}.png
@@ -141,13 +138,14 @@ jobs:
           cargo build --release \
             --bin ${{ env.BINARY_NAME }} \
             --target ${{ matrix.target }}
+
       - name: Upload slice ${{ matrix.arch }}
         uses: actions/upload-artifact@v4
         with:
           name: slice-${{ matrix.arch }}
           path: target/${{ matrix.target }}/release/${{ env.BINARY_NAME }}
 
-   # 3) Create & Upload macOS .app bundle + DMG
+  # 3) Create & Upload macOS .app bundle + DMG
   macos-bundle:
     name: Create & Upload Universal .app + DMG
     needs: macos-universal
@@ -167,6 +165,13 @@ jobs:
           name: slice-arm64
           path: slice-arm64
 
+      # ── IMPORT YOUR SIGNING CERTIFICATES ──────────────────────────────────────
+      - name: Import Apple code-signing certs
+        uses: apple-actions/import-codesign-certs@v5
+        with:
+          p12-file-base64: ${{ secrets.APPSTORE_CERTIFICATES_FILE_BASE64 }}
+          p12-password:    ${{ secrets.APPSTORE_CERTIFICATES_PASSWORD }}
+
       - name: Create macOS .app Bundle
         run: |
           APP="${{ env.APP_NAME }}.app"
@@ -177,7 +182,7 @@ jobs:
             -create -output "$APP/Contents/MacOS/${{ env.APP_NAME }}"
           cat > "$APP/Contents/Info.plist" <<EOF
           <?xml version="1.0" encoding="UTF-8"?>
-          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//"
                    "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
           <plist version="1.0"><dict>
             <key>CFBundleName</key><string>${{ env.APP_NAME }}</string>
@@ -189,39 +194,44 @@ jobs:
             <key>CFBundleIconFile</key><string>idevicepair.icns</string>
           </dict></plist>
           EOF
-        
           sips -s format icns "${{ env.ICON_PNG }}" --out "$APP/Contents/Resources/icon.icns"
-          xattr -rc "$APP"       # remove extended attributes
-          codesign --deep --force --sign - "$APP"
-          # Fix permissions
+          xattr -rc "$APP"
+          codesign --deep --force --sign "Apple Distribution" "$APP"
           find "$APP" -type d -exec chmod 755 {} +
           find "$APP" -type f -exec chmod 644 {} +
           chmod +x "$APP/Contents/MacOS/${{ env.APP_NAME }}"
-      - name: Zip .app Bundle
+
+      - name: Zip signed .app Bundle
         run: |
           ditto -c -k --sequesterRsrc --keepParent \
             "${{ env.APP_NAME }}.app" \
-            "${{ env.APP_NAME }}--macos-universal.zip"
-            
-      - name: Create DMG with drag-and-drop UI
+            "${{ env.APP_NAME }}-macos-universal.app.zip"
+
+      - name: Create signed DMG
         run: |
           APP="${{ env.APP_NAME }}.app"
           DMG_DIR="dmg-staging"
-      
-          # Create a staging folder
           mkdir -p "$DMG_DIR"
           cp -R "$APP" "$DMG_DIR/"
-      
-          # Create a symlink to /Applications
           ln -s /Applications "$DMG_DIR/Applications"
-      
-          # Build the DMG with layout
           hdiutil create \
             -volname "${{ env.APP_NAME }}" \
             -srcfolder "$DMG_DIR" \
             -ov \
             -format UDZO \
             "${{ env.APP_NAME }}-${{ env.VERSION }}-macos-universal.dmg"
+
+      - name: Upload signed .app
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.APP_NAME }}-${{ env.VERSION }}-macos-universal.app
+          path: ${{ env.APP_NAME }}.app
+
+      - name: Upload signed DMG
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.APP_NAME }}-${{ env.VERSION }}-macos-universal.dmg
+          path: ${{ env.APP_NAME }}-${{ env.VERSION }}-macos-universal.dmg
 
   # 4) Build & Upload Windows .exe
   build-windows:
@@ -241,6 +251,7 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}-
             ${{ runner.os }}-cargo-
+
       - name: Set up Rust
         uses: actions-rs/toolchain@v1
         with:
@@ -255,6 +266,7 @@ jobs:
           mkdir -p release
           cp target/x86_64-pc-windows-msvc/release/${{ env.BINARY_NAME }}.exe \
              release/${{ env.APP_NAME }}-${{ env.VERSION }}-windows-x86_64.exe
+
       - name: Upload Windows .exe
         uses: actions/upload-artifact@v4
         with:
