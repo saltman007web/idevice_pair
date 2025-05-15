@@ -143,7 +143,7 @@ jobs:
           name: slice-${{ matrix.arch }}
           path: target/${{ matrix.target }}/release/${{ env.BINARY_NAME }}
 
-  # 3) Create, Sign, Notarize & Upload Universal .app Bundle
+    # 3) Create, Sign, Notarize & Upload Universal .app Bundle
   macos-bundle:
     name: Create, Sign, Notarize & Upload Universal .app Bundle
     needs: macos-universal
@@ -170,10 +170,7 @@ jobs:
           p12-file-base64: ${{ secrets.DEV_ID_P12_BASE64 }}
           p12-password:    ${{ secrets.DEV_ID_P12_PASSWORD }}
 
-      - name: Verify code signing identities
-        run: security find-identity -v -p codesigning
-
-      - name: Build Universal .app Bundle
+      - name: Build & Codesign .app
         run: |
           APP="${{ env.APP_NAME }}.app"
           mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
@@ -194,10 +191,6 @@ jobs:
           </dict></plist>
           EOF
           sips -s format icns "${{ env.ICON_PNG }}" --out "$APP/Contents/Resources/idevicepair.icns"
-
-      - name: Codesign with Hardened Runtime
-        run: |
-          APP="${{ env.APP_NAME }}.app"
           xattr -rc "$APP"
           codesign --deep --force --options runtime \
             --sign "${{ secrets.DEV_IDENTITY_NAME }}" "$APP"
@@ -205,20 +198,22 @@ jobs:
           find "$APP" -type f -exec chmod 644 {} +
           chmod +x "$APP/Contents/MacOS/${{ env.APP_NAME }}"
 
-      - name: Notarize .app via notarytool CLI
+      - name: Notarize .app via notarytool
         env:
-          APP: "${{ env.APP_NAME }}.app"
+          APP_PATH: "${{ env.APP_NAME }}.app"
+          BUNDLE_ID: "com.github.se2cird2.${{ env.APP_NAME }}"
         run: |
-          xcrun notarytool submit "$APP" \
+          xcrun notarytool submit "$APP_PATH" \
             --apple-id "${{ secrets.NOTARIZE_APPLE_ID }}" \
             --password "${{ secrets.NOTARIZE_APP_SPECIFIC_PASS }}" \
             --team-id "${{ secrets.NOTARIZE_TEAM_ID }}" \
+            --bundle-id "$BUNDLE_ID" \
             --wait \
-            --verbose
+            --verbose \
+            --force
 
       - name: Staple notarization ticket into .app
-        run: |
-          xcrun stapler staple "${{ env.APP_NAME }}.app"
+        run: xcrun stapler staple "${{ env.APP_NAME }}.app"
 
       - name: Zip notarized .app Bundle
         run: |
