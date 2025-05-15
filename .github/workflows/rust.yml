@@ -191,25 +191,25 @@ jobs:
             "${{ env.APP_NAME }}.app" \
             "${{ env.APP_NAME }}--macos-universal.zip"
             
-- name: Create DMG with drag-and-drop UI
-  run: |
-    APP="${{ env.APP_NAME }}.app"
-    DMG_DIR="dmg-staging"
-
-    # Create a staging folder
-    mkdir -p "$DMG_DIR"
-    cp -R "$APP" "$DMG_DIR/"
-
-    # Create a symlink to /Applications
-    ln -s /Applications "$DMG_DIR/Applications"
-
-    # Build the DMG with layout
-    hdiutil create \
-      -volname "${{ env.APP_NAME }}" \
-      -srcfolder "$DMG_DIR" \
-      -ov \
-      -format UDZO \
-      "${{ env.APP_NAME }}-${{ env.VERSION }}-macos-universal.dmg"
+      - name: Create DMG with drag-and-drop UI
+        run: |
+          APP="${{ env.APP_NAME }}.app"
+          DMG_DIR="dmg-staging"
+      
+          # Create a staging folder
+          mkdir -p "$DMG_DIR"
+          cp -R "$APP" "$DMG_DIR/"
+      
+          # Create a symlink to /Applications
+          ln -s /Applications "$DMG_DIR/Applications"
+      
+          # Build the DMG with layout
+          hdiutil create \
+            -volname "${{ env.APP_NAME }}" \
+            -srcfolder "$DMG_DIR" \
+            -ov \
+            -format UDZO \
+            "${{ env.APP_NAME }}-${{ env.VERSION }}-macos-universal.dmg"
 
   # 4) Build & Upload Windows .exe
   build-windows:
