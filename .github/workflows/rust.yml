@@ -147,24 +147,23 @@ jobs:
 
   # 3) Create, Sign, Notarize & Upload Universal .app Bundle
   macos-bundle:
-    name: Create, Sign, Notarize & Upload Universal .app
+    name: Create, Sign, Notarize & Upload Universal .app Bundle
     needs: macos-universal
     runs-on: macos-latest
 
     env:
-      PROFILE: ${{ secrets.NOTARIZE_PROFILE_NAME }}
+      APP_NAME: ${{ env.APP_NAME }}
+      ZIP_NAME: "${{ env.APP_NAME }}_notarize.zip"
 
     steps:
       - uses: actions/checkout@v3
 
-      - name: Download x86_64 slice
+      - name: Download slices
         uses: actions/download-artifact@v4
         with:
           name: slice-x86_64
           path: slice-x86_64
-
-      - name: Download arm64 slice
-        uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v4
         with:
           name: slice-arm64
           path: slice-arm64
@@ -175,7 +174,7 @@ jobs:
           p12-file-base64: ${{ secrets.DEV_ID_P12_BASE64 }}
           p12-password:    ${{ secrets.DEV_ID_P12_PASSWORD }}
 
-      - name: Build Universal .app
+      - name: Build & Codesign Universal .app
         run: |
           APP="$APP_NAME.app"
           mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
@@ -197,34 +196,32 @@ jobs:
           EOF
           sips -s format icns "${{ env.ICON_PNG }}" \
             --out "$APP/Contents/Resources/idevicepair.icns"
+          xattr -rc "$APP"
+          codesign --force --timestamp --options runtime \
+            --sign "${{ secrets.DEV_IDENTITY_NAME }}" "$APP"
+          find "$APP" -type d -exec chmod 755 {} +
+          find "$APP" -type f -exec chmod 644 {} +
+          chmod +x "$APP/Contents/MacOS/$APP_NAME"
 
-      - name: Sign, Notarize & Package
-        shell: bash
+      - name: Notarize & Package .app
         run: |
           set -e
           APP="$APP_NAME.app"
-          ZIP="${APP_NAME}_notarize.zip"
-          # 1) Codesign
-          codesign --force --timestamp --options runtime \
-            --sign "${{ secrets.DEV_IDENTITY_NAME }}" \
-            "$APP"
-          # 2) ZIP for notarization
+          ZIP="$ZIP_NAME"
+          # ZIP for notarization
           ditto -c -k --keepParent "$APP" "$ZIP"
-          # 3) Store credentials
-          xcrun notarytool store-credentials "$PROFILE" \
+          # Submit directly with Apple ID creds
+          xcrun notarytool submit "$ZIP" \
             --apple-id "${{ secrets.NOTARIZE_APPLE_ID }}" \
             --password "${{ secrets.NOTARIZE_APP_SPECIFIC_PASS }}" \
-            --team-id "${{ secrets.NOTARIZE_TEAM_ID }}"
-          # 4) Submit & wait
-          xcrun notarytool submit "$ZIP" \
-            --keychain-profile "$PROFILE" \
-            --bundle-id "com.github.se2cird2.${{ env.APP_NAME }}" \
+            --team-id "${{ secrets.NOTARIZE_TEAM_ID }}" \
+            --bundle-id "com.github.se2cird2.$APP_NAME" \
             --wait --verbose --force
-          # 5) Staple ticket
+          # Staple the ticket
           xcrun stapler staple "$APP"
-          # 6) Clean up
+          # Clean up
           rm "$ZIP"
-          # 7) Package into DMG
+          # Package into DMG
           mkdir tmp && mv "$APP" tmp/
           hdiutil create -srcfolder tmp -volname "$APP_NAME" "$APP_NAME.dmg"
           mv tmp/"$APP" .
