@@ -68,7 +68,7 @@ jobs:
             pkg-config \
             libfuse2 \
             appstream \
-            usbmuxd \
+            usbmuxd
 
       - name: Build native binary
         run: |
@@ -110,7 +110,7 @@ jobs:
         with:
           name: ${{ env.APP_NAME }}-${{ env.VERSION }}-linux-${{ matrix.arch }}.AppImage
           path: ${{ env.APP_NAME }}-${{ env.VERSION }}-linux-${{ matrix.arch }}.AppImage
-        
+
   # 2) Build macOS slices
   macos-universal:
     name: Build macOS slices
@@ -145,10 +145,12 @@ jobs:
           name: slice-${{ matrix.arch }}
           path: target/${{ matrix.target }}/release/${{ env.BINARY_NAME }}
 
+  # 3) Create, Sign, Notarize & Upload DMG only
   macos-bundle:
-    name: Create, Sign, Notarize & Upload macOS .app + DMG
+    name: Create, Sign, Notarize & Upload macOS DMG
     needs: macos-universal
     runs-on: macos-latest
+
     steps:
       - uses: actions/checkout@v3
 
@@ -190,22 +192,15 @@ jobs:
             <key>CFBundleShortVersionString</key><string>${{ env.VERSION }}</string>
             <key>CFBundlePackageType</key><string>APPL</string>
             <key>CFBundleExecutable</key><string>${{ env.APP_NAME }}</string>
-            <key>CFBundleIconFile</key><string>idevicepair.icns</string>
+            <key>CFBundleIconFile</key><string>idevicepair.icns</key>
           </dict></plist>
           EOF
-          sips -s format icns "${{ env.ICON_PNG }}" \
-            --out "$APP/Contents/Resources/icon.icns"
+          sips -s format icns "${{ env.ICON_PNG }}" --out "$APP/Contents/Resources/icon.icns"
           xattr -rc "$APP"
           codesign --deep --force --sign "${{ secrets.DEV_IDENTITY_NAME }}" "$APP"
           find "$APP" -type d -exec chmod 755 {} +
           find "$APP" -type f -exec chmod 644 {} +
           chmod +x "$APP/Contents/MacOS/${{ env.APP_NAME }}"
-
-      - name: Zip signed .app
-        run: |
-          ditto -c -k --sequesterRsrc --keepParent \
-            "${{ env.APP_NAME }}.app" \
-            "${{ env.APP_NAME }}-${{ env.VERSION }}-macos-universal.zip"
 
       - name: Create unsigned DMG
         run: |
@@ -227,13 +222,7 @@ jobs:
           appstore-connect-username: ${{ secrets.NOTARIZE_APPLE_ID }}
           appstore-connect-password: ${{ secrets.NOTARIZE_APP_SPECIFIC_PASS }}
           appstore-connect-team-id: ${{ secrets.NOTARIZE_TEAM_ID }}
-          staple: true 
-
-      - name: Upload signed .app
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ env.APP_NAME }}-${{ env.VERSION }}-macos-universal.app
-          path: ${{ env.APP_NAME }}.app
+          staple: true
 
       - name: Upload notarized DMG
         uses: actions/upload-artifact@v4
@@ -241,7 +230,39 @@ jobs:
           name: ${{ env.APP_NAME }}-${{ env.VERSION }}-macos-universal.dmg
           path: ${{ env.APP_NAME }}-${{ env.VERSION }}-macos-universal.dmg
 
-  # 4) Build & Upload Windows .exe
+  # 4) Extract & Upload Notarized .app
+  extract-app:
+    name: Extract & Upload Notarized .app
+    runs-on: macos-latest
+    needs: macos-bundle
+
+    steps:
+      - name: Download Notarized DMG
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.APP_NAME }}-${{ env.VERSION }}-macos-universal.dmg
+          path: .
+
+      - name: Mount DMG
+        run: |
+          hdiutil attach "${{ env.APP_NAME }}-${{ env.VERSION }}-macos-universal.dmg" \
+            -nobrowse \
+            -mountpoint "/Volumes/${{ env.APP_NAME }}"
+
+      - name: Copy out notarized .app
+        run: |
+          cp -R "/Volumes/${{ env.APP_NAME }}/${{ env.APP_NAME }}.app" ./
+
+      - name: Detach DMG
+        run: hdiutil detach "/Volumes/${{ env.APP_NAME }}"
+
+      - name: Upload Notarized .app
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.APP_NAME }}-${{ env.VERSION }}-macos-universal.app
+          path: ${{ env.APP_NAME }}.app
+
+  # 5) Build & Upload Windows .exe
   build-windows:
     name: Build & Upload Windows .exe
     runs-on: windows-latest
