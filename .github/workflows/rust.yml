@@ -145,9 +145,8 @@ jobs:
           name: slice-${{ matrix.arch }}
           path: target/${{ matrix.target }}/release/${{ env.BINARY_NAME }}
 
-  # 3) Create & Upload macOS .app bundle + DMG
   macos-bundle:
-    name: Create & Upload Universal .app + DMG
+    name: Create, Sign, Notarize & Upload macOS .app + DMG
     needs: macos-universal
     runs-on: macos-latest
     steps:
@@ -165,13 +164,16 @@ jobs:
           name: slice-arm64
           path: slice-arm64
 
-      - name: Import Apple code-signing certs
+      - name: Import Developer ID certificate
         uses: apple-actions/import-codesign-certs@v5
         with:
-          p12-file-base64: ${{ secrets.APPSTORE_CERTIFICATES_FILE_BASE64 }}
-          p12-password:    ${{ secrets.APPSTORE_CERTIFICATES_PASSWORD }}
+          p12-file-base64: ${{ secrets.DEV_ID_P12_BASE64 }}
+          p12-password:    ${{ secrets.DEV_ID_P12_PASSWORD }}
 
-      - name: Create macOS .app Bundle
+      - name: Verify code signing identities
+        run: security find-identity -v -p codesigning
+
+      - name: Build Universal .app Bundle
         run: |
           APP="${{ env.APP_NAME }}.app"
           mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
@@ -190,28 +192,27 @@ jobs:
             <key>CFBundleShortVersionString</key><string>${{ env.VERSION }}</string>
             <key>CFBundlePackageType</key><string>APPL</string>
             <key>CFBundleExecutable</key><string>${{ env.APP_NAME }}</string>
-            <key>CFBundleIconFile</key><string>icon.icns</string>
+            <key>CFBundleIconFile</key><string>idevicepair.icns</key>
           </dict></plist>
           EOF
           sips -s format icns "${{ env.ICON_PNG }}" --out "$APP/Contents/Resources/icon.icns"
           xattr -rc "$APP"
-          codesign --deep --force --sign "Apple Distribution" "$APP"
+          codesign --deep --force --sign "${{ secrets.DEV_IDENTITY_NAME }}" "$APP"
           find "$APP" -type d -exec chmod 755 {} +
           find "$APP" -type f -exec chmod 644 {} +
           chmod +x "$APP/Contents/MacOS/${{ env.APP_NAME }}"
 
-      - name: Zip signed .app Bundle
+      - name: Zip signed .app
         run: |
           ditto -c -k --sequesterRsrc --keepParent \
             "${{ env.APP_NAME }}.app" \
-            "${{ env.APP_NAME }}-macos-universal.app.zip"
+            "${{ env.APP_NAME }}-${{ env.VERSION }}-macos-universal.zip"
 
-      - name: Create signed DMG
+      - name: Create unsigned DMG
         run: |
-          APP="${{ env.APP_NAME }}.app"
           DMG_DIR="dmg-staging"
           mkdir -p "$DMG_DIR"
-          cp -R "$APP" "$DMG_DIR/"
+          cp -R "${{ env.APP_NAME }}.app" "$DMG_DIR/"
           ln -s /Applications "$DMG_DIR/Applications"
           hdiutil create \
             -volname "${{ env.APP_NAME }}" \
@@ -220,13 +221,23 @@ jobs:
             -format UDZO \
             "${{ env.APP_NAME }}-${{ env.VERSION }}-macos-universal.dmg"
 
+      - name: Notarize DMG
+        uses: GuillaumeFalourd/xcode-notarize@v1
+        with:
+          product-path: "${{ env.APP_NAME }}-${{ env.VERSION }}-macos-universal.dmg"
+          appstore-connect-username: ${{ secrets.NOTARIZE_APPLE_ID }}
+          appstore-connect-password: ${{ secrets.NOTARIZE_APP_SPECIFIC_PASS }}
+
+      - name: Staple notarization ticket
+        run: xcrun stapler staple "${{ env.APP_NAME }}-${{ env.VERSION }}-macos-universal.dmg"
+
       - name: Upload signed .app
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.APP_NAME }}-${{ env.VERSION }}-macos-universal.app
           path: ${{ env.APP_NAME }}.app
 
-      - name: Upload signed DMG
+      - name: Upload signed & notarized DMG
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.APP_NAME }}-${{ env.VERSION }}-macos-universal.dmg
