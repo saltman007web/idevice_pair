@@ -135,7 +135,6 @@ jobs:
           name: slice-${{ matrix.arch }}
           path: target/${{ matrix.target }}/release/${{ env.BINARY_NAME }}
 
-  # 3) Create & Upload macOS .app bundle
    # 3) Create & Upload macOS .app bundle + DMG
   macos-bundle:
     name: Create & Upload Universal .app + DMG
@@ -178,8 +177,8 @@ jobs:
             <key>CFBundleIconFile</key><string>idevicepair.icns</string>
           </dict></plist>
           EOF
-          # Generate .icns from your PNG
-          sips -s format icns "${{ env.ICON_PNG }}" --out "$APP/Contents/Resources/idevicepair.icns"
+        
+          sips -s format icns "${{ env.ICON_PNG }}" --out "$APP/Contents/Resources/icon.icns"
           xattr -rc "$APP"       # remove extended attributes
           codesign --deep --force --sign - "$APP"
           # Fix permissions
@@ -191,26 +190,26 @@ jobs:
           ditto -c -k --sequesterRsrc --keepParent \
             "${{ env.APP_NAME }}.app" \
             "${{ env.APP_NAME }}--macos-universal.zip"
-      - name: Create DMG image
-        run: |
-          # create a read-only, compressed disk image of the .app
-          hdiutil create \
-            -volname "${{ env.APP_NAME }}" \
-            -srcfolder "${{ env.APP_NAME }}.app" \
-            -ov \
-            -format UDZO \
-            "${{ env.APP_NAME }}-${{ env.VERSION }}-macos-universal.dmg"
-      - name: Upload zipped .app
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ env.APP_NAME }}--macos-universal.zip
-          path: ${{ env.APP_NAME }}--macos-universal.zip
+            
+- name: Create DMG with drag-and-drop UI
+  run: |
+    APP="${{ env.APP_NAME }}.app"
+    DMG_DIR="dmg-staging"
 
-      - name: Upload DMG
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ env.APP_NAME }}-${{ env.VERSION }}-macos-universal.dmg
-          path: ${{ env.APP_NAME }}-${{ env.VERSION }}-macos-universal.dmg
+    # Create a staging folder
+    mkdir -p "$DMG_DIR"
+    cp -R "$APP" "$DMG_DIR/"
+
+    # Create a symlink to /Applications
+    ln -s /Applications "$DMG_DIR/Applications"
+
+    # Build the DMG with layout
+    hdiutil create \
+      -volname "${{ env.APP_NAME }}" \
+      -srcfolder "$DMG_DIR" \
+      -ov \
+      -format UDZO \
+      "${{ env.APP_NAME }}-${{ env.VERSION }}-macos-universal.dmg"
 
   # 4) Build & Upload Windows .exe
   build-windows:
