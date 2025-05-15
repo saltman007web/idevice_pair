@@ -165,55 +165,88 @@ jobs:
           name: slice-arm64
           path: slice-arm64
 
-      - name: Import Developer ID certificate
+      - name: Import Developer ID Certificate
         uses: apple-actions/import-codesign-certs@v5
         with:
           p12-file-base64: ${{ secrets.DEV_ID_P12_BASE64 }}
           p12-password:    ${{ secrets.DEV_ID_P12_PASSWORD }}
 
-      - name: Build Universal .app Bundle
+      - name: Build & Assemble Universal .app
         run: |
           APP="${{ env.APP_NAME }}.app"
           mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-          lipo slice-x86_64/${{ env.BINARY_NAME }} slice-arm64/${{ env.BINARY_NAME }} \
-            -create -output "$APP/Contents/MacOS/${{ env.APP_NAME }}"
-          # generate Info.plist and icon as before…
 
-      - name: Codesign .app
+          # 1) Merge slices
+          lipo slice-x86_64/${{ env.BINARY_NAME }} \
+               slice-arm64/${{ env.BINARY_NAME }} \
+            -create -output "$APP/Contents/MacOS/${{ env.APP_NAME }}"
+
+          # 2) Write Info.plist
+          cat > "$APP/Contents/Info.plist" <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+                   "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+            <key>CFBundleName</key><string>${{ env.APP_NAME }}</string>
+            <key>CFBundleDisplayName</key><string>${{ env.APP_NAME }}</string>
+            <key>CFBundleIdentifier</key><string>com.github.se2cird2.${{ env.APP_NAME }}</string>
+            <key>CFBundleVersion</key><string>${{ env.VERSION }}</string>
+            <key>CFBundleShortVersionString</key><string>${{ env.VERSION }}</string>
+            <key>CFBundleExecutable</key><string>${{ env.APP_NAME }}</string>
+            <key>CFBundlePackageType</key><string>APPL</string>
+            <key>CFBundleIconFile</key><string>icon.icns</string>
+          </dict></plist>
+          EOF
+
+          # 3) Generate .icns from PNG
+          sips -s format icns "${{ env.ICON_PNG }}" \
+            --out "$APP/Contents/Resources/icon.icns"
+
+          # 4) Clean any stray xattrs
+          xattr -rc "$APP"
+
+      - name: Code-sign with Hardened Runtime & Timestamp
         run: |
           APP="${{ env.APP_NAME }}.app"
-          xattr -rc "$APP"
-          codesign --force --timestamp --options runtime \
+          codesign --force --deep --options runtime --timestamp \
             --sign "${{ secrets.DEV_IDENTITY_NAME }}" "$APP"
+
+      - name: Fix Permissions
+        run: |
+          APP="${{ env.APP_NAME }}.app"
+          find "$APP" -type d -exec chmod 755 {} +
+          find "$APP" -type f -exec chmod 644 {} +
+          chmod +x "$APP/Contents/MacOS/${{ env.APP_NAME }}"
 
       - name: Create DMG
         run: |
-          mkdir dmg-staging
+          DMG="dist/${{ env.APP_NAME }}-${{ env.VERSION }}-macos-universal.dmg"
+          mkdir -p dist dmg-staging
           cp -R "${{ env.APP_NAME }}.app" dmg-staging/
           ln -s /Applications dmg-staging/Applications
           hdiutil create \
             -volname "${{ env.APP_NAME }}" \
             -srcfolder dmg-staging \
             -ov -format UDZO \
-            "${{ env.APP_NAME }}-${{ env.VERSION }}-macos-universal.dmg"
+            "$DMG"
+          rm -rf dmg-staging
+          echo "$DMG" > dmg-path.txt
 
-      - name: Notarize DMG
+      - name: Notarize & Staple DMG
         run: |
-          xcrun notarytool submit "${{ env.APP_NAME }}-${{ env.VERSION }}-macos-universal.dmg" \
+          DMG=$(cat dmg-path.txt)
+          xcrun notarytool submit "$DMG" \
             --apple-id "${{ secrets.NOTARIZE_APPLE_ID }}" \
             --password "${{ secrets.NOTARIZE_APP_SPECIFIC_PASS }}" \
             --team-id "${{ secrets.NOTARIZE_TEAM_ID }}" \
             --wait --verbose
+          xcrun stapler staple "$DMG"
 
-      - name: Staple ticket into DMG
-        run: |
-          xcrun stapler staple "${{ env.APP_NAME }}-${{ env.VERSION }}-macos-universal.dmg"
-
-      - name: Upload notarized DMG
+      - name: Upload Notarized DMG
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.APP_NAME }}-${{ env.VERSION }}-macos-universal.dmg
-          path: ${{ env.APP_NAME }}-${{ env.VERSION }}-macos-universal.dmg
+          path: dist/${{ env.APP_NAME }}-${{ env.VERSION }}-macos-universal.dmg
 
 
   # 5) Build & Upload Windows .exe
